@@ -1,0 +1,1 @@
+# How It Works\n\n1) Export job → 2) Poll → 3) Download CSV → 4) Parse → 5) Normalize → 6) Search by email → 7) Create/Update → 8) Logs\n

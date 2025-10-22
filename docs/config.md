@@ -1,0 +1,1 @@
+# Config\n\nSee `.env.example`. Key vars: SENDGRID_API_KEY, TWENTY_BASE_URL, TWENTY_API_TOKEN, CONCURRENCY, BATCH_SIZE.\n

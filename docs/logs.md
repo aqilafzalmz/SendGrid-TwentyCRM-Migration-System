@@ -1,0 +1,1 @@
+# Logs\n\n`npm start > logs/run-$(date +%F).log 2>&1`\nFailed rows in `logs/failed-contacts.csv`.\n

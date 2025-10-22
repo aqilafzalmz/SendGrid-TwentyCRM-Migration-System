@@ -1,0 +1,1 @@
+# Troubleshooting\n\n401/403: bad keys. 404/405 on search: REST search not available, GraphQL fallback used. Lower CONCURRENCY if rate limits.\n

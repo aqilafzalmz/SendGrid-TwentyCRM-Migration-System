@@ -1,0 +1,1 @@
+# Extensions\n\n- Map custom fields via metadata\n- Add scheduler/cron\n- Add Twenty → ListMonk sync script\n

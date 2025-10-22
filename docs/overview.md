@@ -1,0 +1,1 @@
+# Overview\n\nThis tool migrates SendGrid Marketing Contacts into Twenty CRM People. It uses SendGrid's Marketing Exports API, normalizes CSV rows, and upserts into Twenty via REST with GraphQL fallback for search.\n

@@ -1,0 +1,21 @@
+{
+  "name": "sendgrid-to-twenty",
+  "version": "1.1.0",
+  "private": false,
+  "type": "module",
+  "description": "Migrate SendGrid Marketing Contacts to Twenty CRM (REST/GraphQL fallback) with upsert logic.",
+  "license": "MIT",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs",
+    "dry": "DRY_RUN=1 node index.mjs",
+    "lint": "node -e \"console.log('no linter configured')\"",
+    "test": "node -e \"console.log('no tests yet')\""
+  },
+  "dependencies": {
+    "csv-parse": "^5.5.6",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2",
+    "p-limit": "^5.0.0"
+  }
+}

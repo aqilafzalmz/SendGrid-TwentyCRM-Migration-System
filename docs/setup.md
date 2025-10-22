@@ -1,0 +1,1 @@
+# Setup\n\n- Node.js ≥ 18\n- `npm i`\n- `cp .env.example .env` and fill values\n- `npm run dry` (simulate) → `npm start` (run)\n

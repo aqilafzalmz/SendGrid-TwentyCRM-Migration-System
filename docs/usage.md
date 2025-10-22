@@ -1,0 +1,1 @@
+# Usage\n\n- Configure `.env`\n- Run `npm start`\n- Failed rows saved to `logs/failed-contacts.csv`\n
