@@ -16,9 +16,9 @@ A comprehensive, production-ready migration tool for transferring SendGrid Marke
 
 ## 🎯 About This Project
 
-**Biji-Biji Initiatives** presents a robust migration solution for businesses transitioning from SendGrid to Twenty CRM. This tool addresses the critical need for seamless contact data migration while maintaining data integrity and providing real-time visibility into the migration process.
+This is a robust migration solution I built for transferring SendGrid Marketing Contacts to Twenty CRM. This tool addresses the critical need for seamless contact data migration while maintaining data integrity and providing real-time visibility into the migration process.
 
-### Why This Tool Exists
+### Why I Built This Tool
 
 - **Data Migration Challenges**: Moving contact data between CRM systems is complex and error-prone
 - **Business Continuity**: Ensures no data loss during CRM transitions
@@ -279,3 +279,21 @@ For issues and questions:
 - Basic SendGrid to Twenty CRM migration
 - REST and GraphQL API support
 - Basic error handling
+
+## 👨‍💻 About the Developer
+
+This migration tool was built to solve real-world business challenges with robust, production-ready solutions.
+
+### My Mission
+To empower businesses with seamless data migration solutions that ensure data integrity, provide real-time visibility, and minimize downtime during critical system transitions.
+
+### Why Choose This Solution
+- **Enterprise-Grade**: Built for production environments
+- **Real-time Monitoring**: Complete visibility into migration progress
+- **Data Integrity**: Comprehensive validation and error handling
+- **Resume Capability**: Never lose progress on large migrations
+- **Open Source**: Transparent, auditable, and customizable
+
+---
+
+**Built with ❤️ by Aqila Fzal**
