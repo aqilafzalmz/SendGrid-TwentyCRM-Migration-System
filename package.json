@@ -9,13 +9,26 @@
   "scripts": {
     "start": "node index.mjs",
     "dry": "DRY_RUN=1 node index.mjs",
-    "lint": "node -e \"console.log('no linter configured')\"",
-    "test": "node -e \"console.log('no tests yet')\""
+    "monitor": "node monitor-server.mjs",
+    "monitor:start": "node start-with-monitor.mjs",
+    "demo": "node demo-monitor.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint . --ext .mjs",
+    "lint:fix": "eslint . --ext .mjs --fix"
   },
   "dependencies": {
     "csv-parse": "^5.5.6",
     "dotenv": "^16.4.5",
     "node-fetch": "^3.3.2",
-    "p-limit": "^5.0.0"
+    "p-limit": "^5.0.0",
+    "express": "^4.18.2",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "vitest": "^1.0.0",
+    "eslint": "^8.0.0",
+    "@vitest/coverage-v8": "^1.0.0"
   }
 }
