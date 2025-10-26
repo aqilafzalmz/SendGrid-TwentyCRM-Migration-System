@@ -1,6 +1,6 @@
-# 🚀 SendGrid → Twenty CRM Migration Tool
+# 🚀 Mereka Migration System (SendGrid - 20CRM)
 
-A comprehensive, production-ready migration tool for transferring SendGrid Marketing Contacts to Twenty CRM with real-time monitoring, error handling, and data validation.
+A comprehensive, production-ready migration tool for transferring SendGrid Marketing Contacts to 20CRM with real-time monitoring, interactive list selection, and data validation.
 
 ## ✨ Features
 

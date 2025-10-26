@@ -5,11 +5,13 @@ import { WebSocketServer } from 'ws';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'url';
+import { spawn } from 'child_process';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.use(express.json());
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
@@ -119,14 +121,125 @@ async function getSystemInfo() {
   };
 }
 
+// Get SendGrid lists
+async function getSendGridLists() {
+  try {
+    const { default: fetch } = await import('node-fetch');
+    const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
+    
+    if (!SENDGRID_API_KEY) {
+      return { error: 'SENDGRID_API_KEY not configured' };
+    }
+
+    const response = await fetch('https://api.sendgrid.com/v3/marketing/lists', {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${SENDGRID_API_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      return { error: `Failed to fetch lists: ${response.status} ${errorText}` };
+    }
+
+    const data = await response.json();
+    return { lists: data.result || [] };
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
+// Get selected list IDs from environment
+async function getSelectedLists() {
+  try {
+    const selectedListsPath = path.join(logsDir, 'selected-lists.json');
+    const data = await fs.readFile(selectedListsPath, 'utf8');
+    const parsed = JSON.parse(data);
+    return { 
+      listIds: parsed.listIds || [], 
+      listNames: parsed.listNames || [],
+      destinationType: parsed.destinationType || 'people' 
+    };
+  } catch (error) {
+    return { listIds: [], listNames: [], destinationType: 'people' };
+  }
+}
+
+// Save selected lists
+async function saveSelectedLists(listIds, listNames = [], destinationType) {
+  try {
+    const selectedListsPath = path.join(logsDir, 'selected-lists.json');
+    await fs.writeFile(selectedListsPath, JSON.stringify({ 
+      listIds, 
+      listNames,
+      destinationType 
+    }), 'utf8');
+    return true;
+  } catch (error) {
+    console.error('Error saving selected lists:', error);
+    return false;
+  }
+}
+
+// Track active migrations
+const activeMigrations = new Map();
+
+// Start migration process
+function startMigrationProcess(listIds, listNames = [], destinationType) {
+  try {
+    // Set environment variables for the migration
+    const env = { ...process.env };
+    env.SENDGRID_LIST_IDS = listIds.join(',');
+    env.DESTINATION_TYPE = destinationType;
+    
+    // Store list names as comma-separated for passing to migration
+    env.SENDGRID_LIST_NAMES = listNames.join(',');
+    
+    console.log(`\n🚀 Starting migration for lists: ${listNames.join(', ') || listIds.join(', ')}`);
+    console.log(`📁 Destination type: ${destinationType}`);
+    console.log(`⏳ Migration process starting...\n`);
+    
+    // Spawn migration process
+    const migration = spawn('node', ['index.mjs'], {
+      env: env,
+      cwd: process.cwd(),
+      stdio: 'inherit',
+      shell: true,
+      detached: false
+    });
+    
+    // Keep reference to prevent garbage collection
+    const migrationId = Date.now().toString();
+    activeMigrations.set(migrationId, migration);
+    
+    migration.on('close', (code) => {
+      console.log(`\n✅ Migration process completed with code ${code}`);
+      activeMigrations.delete(migrationId);
+    });
+    
+    migration.on('error', (error) => {
+      console.error(`❌ Migration process error:`, error);
+      activeMigrations.delete(migrationId);
+    });
+    
+    return true;
+  } catch (error) {
+    console.error('Error starting migration:', error);
+    return false;
+  }
+}
+
 // API endpoints
 app.get('/api/status', async (req, res) => {
   try {
-    const [logData, progressData, failedContacts, systemInfo] = await Promise.all([
+    const [logData, progressData, failedContacts, systemInfo, selectedLists] = await Promise.all([
       parseLogData(),
       getProgressData(),
       getFailedContacts(),
-      getSystemInfo()
+      getSystemInfo(),
+      getSelectedLists()
     ]);
     
     res.json({
@@ -134,7 +247,53 @@ app.get('/api/status', async (req, res) => {
       progressData,
       failedContacts,
       systemInfo,
+      selectedLists,
       timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API endpoint to get SendGrid lists
+app.get('/api/lists', async (req, res) => {
+  try {
+    const listsData = await getSendGridLists();
+    res.json(listsData);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API endpoint to select lists
+app.post('/api/lists/select', async (req, res) => {
+  try {
+    const { listIds, listNames = [], destinationType } = req.body;
+    if (!Array.isArray(listIds)) {
+      return res.status(400).json({ error: 'listIds must be an array' });
+    }
+    
+    const success = await saveSelectedLists(listIds, listNames, destinationType);
+    res.json({ success, listIds, listNames, destinationType });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// API endpoint to start migration
+app.post('/api/migration/start', (req, res) => {
+  try {
+    const { listIds, listNames = [], destinationType } = req.body;
+    if (!Array.isArray(listIds) || listIds.length === 0) {
+      return res.status(400).json({ error: 'At least one list must be selected' });
+    }
+    
+    // Return response immediately
+    res.json({ success: true, message: 'Migration starting...' });
+    
+    // Start the migration process asynchronously
+    saveSelectedLists(listIds, listNames, destinationType).then(() => {
+      startMigrationProcess(listIds, listNames, destinationType);
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -197,11 +356,12 @@ wss.on('connection', (ws) => {
 // Broadcast updates every 5 seconds
 setInterval(async () => {
   try {
-    const [logData, progressData, failedContacts, systemInfo] = await Promise.all([
+    const [logData, progressData, failedContacts, systemInfo, selectedLists] = await Promise.all([
       parseLogData(),
       getProgressData(),
       getFailedContacts(),
-      getSystemInfo()
+      getSystemInfo(),
+      getSelectedLists()
     ]);
     
     broadcast({
@@ -211,6 +371,7 @@ setInterval(async () => {
         progressData,
         failedContacts,
         systemInfo,
+        selectedLists,
         timestamp: new Date().toISOString()
       }
     });
@@ -221,7 +382,7 @@ setInterval(async () => {
 
 // Start server
 server.listen(PORT, () => {
-  console.log(`🚀 Migration Monitor running at http://localhost:${PORT}`);
+  console.log(`🚀 Mereka Migration System Monitor running at http://localhost:${PORT}`);
   console.log(`📊 Dashboard: http://localhost:${PORT}`);
   console.log(`📡 WebSocket: ws://localhost:${PORT}`);
 });

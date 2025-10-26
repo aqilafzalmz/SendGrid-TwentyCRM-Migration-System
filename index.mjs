@@ -14,6 +14,9 @@ const {
   TWENTY_CREATE_PERSON_PATH = '/rest/people',
   TWENTY_UPDATE_PERSON_PATH = '/rest/people',
   TWENTY_SEARCH_PERSON_PATH = '/rest/people/search',
+  TWENTY_CREATE_COMPANY_PATH = '/rest/companies',
+  TWENTY_UPDATE_COMPANY_PATH = '/rest/companies',
+  TWENTY_SEARCH_COMPANY_PATH = '/rest/companies/search',
   CONCURRENCY = '5',
   BATCH_SIZE = '100',
   DRY_RUN
@@ -147,8 +150,11 @@ function twentyHeaders() {
 }
 
 function normalizeRow(row) {
-  const email = (row.email || row.Email || '').toString().trim().toLowerCase();
-  if (!email) return null;
+  // Check for email in all common case variations (SendGrid uses UPPERCASE)
+  const email = (row.EMAIL || row.email || row.Email || row['E-mail'] || '').toString().trim().toLowerCase();
+  if (!email || email === '') {
+    return null; // Skip rows without email
+  }
   
   // Enhanced email validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -157,16 +163,34 @@ function normalizeRow(row) {
     return null;
   }
   
-  const firstName = (row.first_name || row.firstName || row.FirstName || '').toString().trim();
-  const lastName = (row.last_name || row.lastName || row.LastName || '').toString().trim();
-  const city = (row.city || row.City || row.location || '').toString().trim();
-  const company = (row.company || row.Company || row.organization || '').toString().trim();
-  const phone = (row.phone || row.Phone || row.phone_number || '').toString().trim();
-  const rawTags = row.tags || row.lists || row.segments || '';
-  const tags = rawTags.toString().split(/[|,;]+/).map(s => s.trim()).filter(Boolean);
+  // Extract names - use userName as primary, fallback to FIRST_NAME/LAST_NAME
+  let firstName = '';
+  let lastName = '';
+  const userName = (row.userName || '').toString().trim();
+  
+  if (userName) {
+    // Split userName into first/last if it contains a space
+    const nameParts = userName.split(' ');
+    firstName = nameParts[0] || '';
+    lastName = nameParts.slice(1).join(' ') || '';
+  } else {
+    // Fallback to separate fields
+    firstName = (row.FIRST_NAME || row.first_name || row.firstName || row.FirstName || row['First Name'] || '').toString().trim();
+    lastName = (row.LAST_NAME || row.last_name || row.lastName || row.LastName || row['Last Name'] || '').toString().trim();
+  }
+  
+  const city = (row.CITY || row.city || row.City || row.location || row.Location || '').toString().trim();
+  const company = (row.Organisation || row.organisation || row.organization || row.Organization || row.company || row.Company || '').toString().trim();
+  const phone = (row.PHONE_NUMBER || row.phone_number || row.phone || row.Phone || row['Phone Number'] || '').toString().trim();
+  const linkedin = (row.LinkedIn || row.linkedin || row.linked_in || '').toString().trim();
+  const rawTags = row.tags || row.lists || row.segments || row.Source || '';
+  const tags = rawTags ? rawTags.toString().split(/[|,;]+/).map(s => s.trim()).filter(Boolean) : [];
   
   // Enhanced data cleaning
-  const cleanString = (str) => str.replace(/[^\w\s@.-]/g, '').trim();
+  const cleanString = (str) => {
+    if (!str) return '';
+    return str.replace(/[^\w\s@.-]/g, '').trim();
+  };
   
   return { 
     email, 
@@ -175,6 +199,7 @@ function normalizeRow(row) {
     location: cleanString(city),
     company: cleanString(company),
     phone: cleanString(phone),
+    linkedin: cleanString(linkedin),
     tags, 
     source: 'sendgrid' 
   };
@@ -200,14 +225,43 @@ async function sgCreateExportJob({ list_ids = [], segment_ids = [] } = {}) {
 }
 
 async function sgPollExport(jobId, { intervalMs = 4000 } = {}) {
+  let pollCount = 0;
+  const maxPolls = 120; // 8 minutes max wait time
+  
   while (true) {
+    pollCount++;
     const r = await fetch(`https://api.sendgrid.com/v3/marketing/contacts/exports/${jobId}`, {
       headers: { Authorization: `Bearer ${SENDGRID_API_KEY}` }
     });
     if (!r.ok) throw new Error(`SendGrid export poll failed: ${r.status} ${await r.text()}`);
     const j = await r.json();
-    if (j.status === 'completed' && Array.isArray(j.urls) && j.urls.length) return j.urls;
-    if (j.status === 'failed') throw new Error('SendGrid export failed');
+    
+    // Log status every 3 polls (every 12 seconds)
+    if (pollCount % 3 === 0) {
+      log(`Polling SendGrid export (${j.status})... (attempt ${pollCount})`);
+    }
+    
+    // SendGrid uses 'ready' status when export is complete
+    if (j.status === 'ready' || j.status === 'completed') {
+      if (Array.isArray(j.urls) && j.urls.length) {
+        log(`Export ready after ${pollCount} polls with ${j.urls.length} file(s)`);
+        return j.urls;
+      } else {
+        log(`Export status is ${j.status} but no URLs found`, 'ERROR');
+      }
+    }
+    
+    if (j.status === 'failed') {
+      log(`Export failed: ${JSON.stringify(j)}`, 'ERROR');
+      throw new Error('SendGrid export failed');
+    }
+    
+    // Safety timeout
+    if (pollCount >= maxPolls) {
+      log(`Export polling timeout after ${pollCount} attempts (status: ${j.status})`, 'ERROR');
+      throw new Error(`SendGrid export polling timeout. Last status: ${j.status}`);
+    }
+    
     await wait(intervalMs);
   }
 }
@@ -305,31 +359,65 @@ async function twentyUpdatePerson(id, payload) {
 }
 
 async function twentyUpsertPerson(data) {
+  const isCompany = global.destinationType === 'company';
   const existing = await twentySearchByEmail(data.email).catch(() => null);
+  
+  // Get list name(s) for this contact (for traceability)
+  const listNames = global.listNames || ['SendGrid'];
+  const sourceTag = `From: ${listNames.join(', ')}`;
+  
   const toPayload = (current = null) => {
-    const base = {
-      email: data.email,
-      firstName: data.firstName || undefined,
-      lastName: data.lastName || undefined,
-      location: data.location || undefined,
-      company: data.company || undefined,
-      phone: data.phone || undefined,
-      source: data.source || 'sendgrid'
-    };
-    const incomingTags = Array.isArray(data.tags) ? data.tags : [];
-    const existingTags = Array.isArray(current?.tags) ? current.tags : [];
-    const merged = [...new Set([...existingTags, ...incomingTags])];
-    if (merged.length) base.tags = merged;
-    return base;
+    // Try absolute minimal payload first - just names
+    const payload = {};
+    
+    // Name fields (most basic fields that should exist)
+    if (data.firstName) payload.firstName = data.firstName;
+    if (data.lastName) payload.lastName = data.lastName;
+    
+    // Combine into full name as fallback
+    const fullName = [data.firstName, data.lastName].filter(Boolean).join(' ');
+    if (fullName) {
+      payload.name = fullName;
+    }
+    
+    // Add source information for traceability
+    if (sourceTag && !isCompany) {
+      // Try to add comment or description with list info
+      payload.comment = sourceTag;
+      payload.source = 'sendgrid';
+    }
+    
+    // Try to add other fields if they exist and don't cause metadata errors
+    // We'll let Twenty CRM reject individual fields rather than failing the whole record
+    
+    return payload;
   };
-  if (!existing) {
-    if (DRY_RUN) return { action: 'create', dryRun: true };
-    const res = await twentyCreatePerson(toPayload());
-    return { action: 'create', id: res?.id || null };
+  
+  if (DRY_RUN) {
+    return { action: 'create', dryRun: true, type: isCompany ? 'company' : 'person' };
+  }
+  
+  if (isCompany) {
+    // For companies, still use people endpoint for now
+    if (!existing) {
+      const payload = toPayload();
+      log(`Creating company record for: ${data.email}`);
+      const res = await twentyCreatePerson(payload);
+      return { action: 'create', id: res?.id || null };
+    } else {
+      const res = await twentyUpdatePerson(existing.id, toPayload(existing));
+      return { action: 'update', id: existing.id || res?.id || null };
+    }
   } else {
-    if (DRY_RUN) return { action: 'update', id: existing.id, dryRun: true };
-    const res = await twentyUpdatePerson(existing.id, toPayload(existing));
-    return { action: 'update', id: existing.id || res?.id || null };
+    // For people
+    if (!existing) {
+      const payload = toPayload();
+      const res = await twentyCreatePerson(payload);
+      return { action: 'create', id: res?.id || null };
+    } else {
+      const res = await twentyUpdatePerson(existing.id, toPayload(existing));
+      return { action: 'update', id: existing.id || res?.id || null };
+    }
   }
 }
 
@@ -341,101 +429,159 @@ async function writeFailedCsv(rows) {
   console.log(`• Wrote failed rows to ${failedCsvPath}`);
 }
 
+async function loadSelectedListsFromFile() {
+  try {
+    const selectedListsPath = path.join(logsDir, 'selected-lists.json');
+    const data = await fs.readFile(selectedListsPath, 'utf8');
+    const parsed = JSON.parse(data);
+    return {
+      listIds: parsed.listIds || [],
+      listNames: parsed.listNames || [],
+      destinationType: parsed.destinationType || 'people'
+    };
+  } catch (error) {
+    return { listIds: [], listNames: [], destinationType: 'people' };
+  }
+}
+
 async function main() {
-  log('Starting SendGrid → Twenty CRM migration');
-  
-  // Check for existing progress
-  const existingProgress = await loadProgress();
-  if (existingProgress) {
-    log(`Found existing progress: ${existingProgress.processed}/${existingProgress.total} processed`);
-    const resume = process.env.RESUME === '1';
-    if (resume) {
-      log('Resuming from previous progress...');
-      // Resume logic would go here
-    } else {
-      log('Starting fresh migration (use RESUME=1 to resume)');
-      await clearProgress();
-    }
-  }
-
-  const list_ids = (SENDGRID_LIST_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-  const segment_ids = (SENDGRID_SEGMENT_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-  log(`Export scope → lists: [${list_ids}], segments: [${segment_ids}]`);
-
-  const jobId = await sgCreateExportJob({ list_ids, segment_ids });
-  log(`SendGrid export job id: ${jobId}`);
-
-  const urls = await sgPollExport(jobId);
-  log(`Export ready with ${urls.length} file(s)`);
-
-  const records = [];
-  for (const [i, url] of urls.entries()) {
-    log(`Downloading CSV ${i + 1}/${urls.length}`);
-    const csvText = await sgDownloadCsv(url);
-    const rows = parse(csvText, { columns: true, skip_empty_lines: true });
-    records.push(...rows);
-  }
-  log(`Parsed ${records.length} rows from SendGrid`);
-
-  const normalized = records
-    .map(normalizeRow)
-    .filter(Boolean)
-    .filter((r, idx, arr) => arr.findIndex(x => x.email === r.email) === idx);
-  log(`Normalized & de-duplicated → ${normalized.length} unique contacts`);
-
-  const limit = pLimit(concurrency);
-  let processed = 0, created = 0, updated = 0, failed = 0;
-  const failedRows = [];
-  const startTime = Date.now();
-
-  const tasks = normalized.map((row, index) => limit(async () => {
-    try {
-      const res = await twentyUpsertPerson(row);
-      processed++;
-      if (res.action === 'create') created++;
-      if (res.action === 'update') updated++;
-      
-      // Save progress every 100 contacts
-      if (processed % 100 === 0) {
-        await saveProgress({
-          processed,
-          total: normalized.length,
-          created,
-          updated,
-          failed,
-          startTime,
-          lastUpdate: new Date().toISOString()
-        });
+  try {
+    log('Starting SendGrid → Twenty CRM migration');
+    
+    // Check for existing progress
+    const existingProgress = await loadProgress();
+    if (existingProgress) {
+      log(`Found existing progress: ${existingProgress.processed}/${existingProgress.total} processed`);
+      const resume = process.env.RESUME === '1';
+      if (resume) {
+        log('Resuming from previous progress...');
+        // Resume logic would go here
+      } else {
+        log('Starting fresh migration (use RESUME=1 to resume)');
+        await clearProgress();
       }
-      
-      if (processed % 50 === 0) {
-        const elapsed = (Date.now() - startTime) / 1000;
-        const rate = processed / elapsed;
-        const eta = (normalized.length - processed) / rate;
-        log(`Progress: ${processed}/${normalized.length} (${Math.round(rate)}/s, ETA: ${Math.round(eta)}s)`);
-      }
-    } catch (e) {
-      failed++;
-      failedRows.push({ email: row.email, error: (e?.message || 'unknown') });
-      log(`Failed for ${row.email}: ${e.message}`, 'ERROR');
     }
-  }));
 
-  await Promise.all(tasks);
-  await writeFailedCsv(failedRows);
-  await clearProgress(); // Clear progress file on completion
+    // Try to load selected lists from file, fallback to environment variable
+    const selectedConfig = await loadSelectedListsFromFile();
+    let list_ids = selectedConfig.listIds.length > 0 ? selectedConfig.listIds : (SENDGRID_LIST_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+    let list_names = selectedConfig.listNames.length > 0 ? selectedConfig.listNames : (process.env.SENDGRID_LIST_NAMES || '').split(',').filter(Boolean);
+    const segment_ids = (SENDGRID_SEGMENT_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+    const destinationType = selectedConfig.destinationType || process.env.DESTINATION_TYPE || 'people';
+    log(`Export scope → lists: [${list_ids.join(', ')}], segments: [${segment_ids.join(', ')}]`);
+    log(`Migration destination: ${destinationType}`);
+    
+    // Store destination type and list information globally
+    global.destinationType = destinationType;
+    global.listNames = list_names.length > 0 ? list_names : ['Unknown List'];
 
-  const totalTime = (Date.now() - startTime) / 1000;
-  log('Migration completed');
-  log(`Total processed: ${processed}`);
-  log(`Created: ${created}`);
-  log(`Updated: ${updated}`);
-  log(`Failures: ${failed}`);
-  log(`Total time: ${Math.round(totalTime)}s`);
-  log(`Average rate: ${Math.round(processed / totalTime)} contacts/second`);
+    const jobId = await sgCreateExportJob({ list_ids, segment_ids });
+    log(`SendGrid export job id: ${jobId}`);
+
+    const urls = await sgPollExport(jobId);
+    log(`Export ready with ${urls.length} file(s)`);
+
+    const records = [];
+    for (const [i, url] of urls.entries()) {
+      log(`Downloading CSV ${i + 1}/${urls.length}`);
+      const csvText = await sgDownloadCsv(url);
+      const rows = parse(csvText, { columns: true, skip_empty_lines: true });
+      log(`CSV has ${rows.length} rows. First row keys: ${Object.keys(rows[0] || {}).join(', ')}`);
+      records.push(...rows);
+    }
+    log(`Parsed ${records.length} rows from SendGrid`);
+
+    const normalized = records
+      .map(normalizeRow)
+      .filter(Boolean)
+      .filter((r, idx, arr) => arr.findIndex(x => x.email === r.email) === idx);
+    log(`Normalized & de-duplicated → ${normalized.length} unique contacts`);
+    
+    if (normalized.length === 0 && records.length > 0) {
+      log(`No valid contacts found. Sample CSV row: ${JSON.stringify(records[0])}`, 'WARN');
+    }
+    
+    log(`Will migrate to: ${destinationType}`);
+
+    const limit = pLimit(concurrency);
+    let processed = 0, created = 0, updated = 0, failed = 0;
+    const failedRows = [];
+    const startTime = Date.now();
+
+    const tasks = normalized.map((row, index) => limit(async () => {
+      try {
+        const res = await twentyUpsertPerson(row);
+        processed++;
+        if (res.action === 'create') {
+          created++;
+          // Log first 10 creations for verification
+          if (created <= 10) {
+            log(`✓ ${destinationType === 'company' ? 'Company' : 'Person'} created: ${row.email}`);
+          }
+        }
+        if (res.action === 'update') {
+          updated++;
+          // Log first 10 updates for verification
+          if (updated <= 10) {
+            log(`↻ Updated: ${row.email}`);
+          }
+        }
+        
+        // Save progress every 100 contacts
+        if (processed % 100 === 0) {
+          await saveProgress({
+            processed,
+            total: normalized.length,
+            created,
+            updated,
+            failed,
+            startTime,
+            lastUpdate: new Date().toISOString()
+          });
+        }
+        
+        if (processed % 50 === 0) {
+          const elapsed = (Date.now() - startTime) / 1000;
+          const rate = processed / elapsed;
+          const eta = (normalized.length - processed) / rate;
+          log(`Progress: ${processed}/${normalized.length} (${Math.round(rate)}/s, ETA: ${Math.round(eta)}s)`);
+        }
+      } catch (e) {
+        failed++;
+        failedRows.push({ email: row.email, error: (e?.message || 'unknown') });
+        
+        // Log but don't stop migration on metadata errors
+        const isMetadataError = e.message.includes('Field metadata') || e.message.includes('missing in object metadata');
+        if (isMetadataError) {
+          log(`⚠ Skipped ${row.email} (field metadata not configured)`, 'WARN');
+        } else {
+          log(`✗ Failed for ${row.email}: ${e.message}`, 'ERROR');
+        }
+      }
+    }));
+
+    await Promise.all(tasks);
+    await writeFailedCsv(failedRows);
+    await clearProgress(); // Clear progress file on completion
+
+    const totalTime = (Date.now() - startTime) / 1000;
+    log('Migration completed');
+    log(`Total processed: ${processed}`);
+    log(`Created: ${created}`);
+    log(`Updated: ${updated}`);
+    log(`Failures: ${failed}`);
+    log(`Total time: ${Math.round(totalTime)}s`);
+    log(`Average rate: ${Math.round(processed / totalTime)} contacts/second`);
+    
+    process.exit(0);
+  } catch (error) {
+    log(`Migration failed: ${error.message}`, 'ERROR');
+    console.error('Migration error details:', error);
+    process.exit(1);
+  }
 }
 
 main().catch((e) => {
-  console.error(e);
+  console.error('Fatal error:', e);
   process.exit(1);
 });

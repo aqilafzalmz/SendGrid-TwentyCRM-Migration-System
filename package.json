@@ -1,9 +1,9 @@
 {
-  "name": "sendgrid-to-twenty",
+  "name": "mereka-migration-system",
   "version": "1.1.0",
   "private": false,
   "type": "module",
-  "description": "Migrate SendGrid Marketing Contacts to Twenty CRM (REST/GraphQL fallback) with upsert logic.",
+  "description": "Mereka Migration System - Migrate SendGrid Marketing Contacts to 20CRM",
   "license": "MIT",
   "main": "index.mjs",
   "scripts": {
