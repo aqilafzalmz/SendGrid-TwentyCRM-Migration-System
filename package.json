@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node index.mjs",
     "dry": "DRY_RUN=1 node index.mjs",
+    "test:api": "node test-connections.mjs",
     "monitor": "node monitor-server.mjs",
     "monitor:start": "node start-with-monitor.mjs",
     "demo": "node demo-monitor.mjs",

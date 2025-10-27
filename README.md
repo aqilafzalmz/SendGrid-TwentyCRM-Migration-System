@@ -108,6 +108,9 @@ RESUME=1  # Set to 1 to resume from previous progress
 ## 🧪 Testing
 
 ```bash
+# Test API connections (Debian & recommended first step)
+npm run test:api
+
 # Run all tests
 npm test
 
@@ -121,20 +124,44 @@ npm run test:coverage
 npm run lint
 ```
 
+### Testing API Connections
+
+Before running your first migration, it's recommended to test both API connections:
+
+```bash
+npm run test:api
+```
+
+This will:
+- ✓ Test SendGrid API connectivity
+- ✓ Create a test export job
+- ✓ Verify CSV download capability
+- ✓ Test Twenty CRM API connectivity
+- ✓ Test contact creation
+- ✓ Clean up test data
+
+**Important:** If you see "Field metadata" errors, see [Twenty CRM Setup Guide](docs/twenty-crm-setup.md)
+
 ## 📊 Data Mapping
 
-The tool maps the following fields from SendGrid to Twenty CRM:
+**Current Implementation (Minimal Mode):**
 
-| SendGrid Field | Twenty CRM Field | Notes |
-|----------------|------------------|-------|
-| `email` | `email` | Required, validated |
-| `first_name` | `firstName` | Cleaned and validated |
-| `last_name` | `lastName` | Cleaned and validated |
-| `city` | `location` | Cleaned and validated |
-| `company` | `company` | Cleaned and validated |
-| `phone` | `phone` | Cleaned and validated |
-| `tags` | `tags` | Merged with existing tags |
-| - | `source` | Set to 'sendgrid' |
+The tool currently maps data as follows to ensure compatibility with all Twenty CRM instances:
+
+| SendGrid Data | Twenty CRM Field | Notes |
+|---------------|------------------|-------|
+| `firstName + lastName + company` or `email` | `name` | Combined into single name field |
+
+**Why Minimal Mode?**
+- Works with all Twenty CRM instances without custom field configuration
+- Avoids "Field metadata" errors
+- Fast and reliable
+
+**To Import Additional Fields:**
+If you need to import more data (firstName, lastName, email, company, etc.):
+1. See [Twenty CRM Setup Guide](docs/twenty-crm-setup.md)
+2. Configure custom fields in Twenty CRM Settings → Objects → Person/Company
+3. Update the migration code to send additional fields
 
 ## 🔧 Advanced Usage
 
@@ -187,20 +214,30 @@ The tool creates several output files in the `logs/` directory:
    - Check API permissions
    - Ensure tokens are not expired
 
-2. **Rate Limiting (429)**
+2. **Field Metadata Errors**
+   - See [Twenty CRM Setup Guide](docs/twenty-crm-setup.md)
+   - The system now works with minimal fields by default
+   - Configure custom fields in Twenty CRM if needed
+
+3. **Rate Limiting (429)**
    - Reduce `CONCURRENCY` setting
    - Add delays between requests
    - Contact API providers for higher limits
 
-3. **Network Timeouts**
+4. **Network Timeouts**
    - Check internet connection
    - Verify firewall settings
    - Try from different network
 
-4. **Data Issues**
+5. **Data Issues**
    - Check `logs/failed-contacts.csv`
    - Verify email formats
    - Review field mappings
+
+6. **Contacts Not Appearing in Twenty CRM**
+   - Run `npm run test:api` to verify API connections
+   - Check logs for "Field metadata" errors
+   - Verify your Twenty CRM API token has write permissions
 
 ### Debug Mode
 
@@ -209,6 +246,29 @@ Enable verbose logging:
 ```bash
 DEBUG=1 npm start
 ```
+
+## 📚 Documentation
+
+### Core Documentation
+- [Data Flow Overview](docs/data-flow.md) - How data flows from SendGrid to Twenty CRM
+- [How It Works](docs/how-it-works.md) - Step-by-step process explanation
+- [Configuration](docs/config.md) - Environment variable reference
+- [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
+- [Twenty CRM Setup](docs/twenty-crm-setup.md) - Configuring custom fields
+- [API Reference](docs/api-reference.md) - API endpoints and usage
+- [Monitoring](docs/monitoring.md) - Monitoring dashboard guide
+
+### Understanding the Migration Flow
+
+The system works as follows:
+1. **SendGrid Export**: Creates an export job in SendGrid cloud
+2. **Poll for Completion**: Waits for export to be ready
+3. **Download CSV**: Downloads CSV from SendGrid (temporarily in memory)
+4. **Parse & Normalize**: Parses CSV and normalizes data
+5. **Upsert to Twenty CRM**: Creates or updates contacts
+6. **Log Results**: Saves logs and failed contacts
+
+**Note:** CSV files are **never saved to disk** - they're processed in memory only for security and efficiency.
 
 ## 📚 API Reference
 

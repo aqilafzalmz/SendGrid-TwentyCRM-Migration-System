@@ -327,18 +327,33 @@ async function twentySearchByEmail(email) {
 
 async function twentyCreatePerson(payload) {
   return await withRetry(async () => {
+    console.log(`\n🔍 Creating person with payload:`, JSON.stringify(payload, null, 2));
     const r = await fetch(new URL(TWENTY_CREATE_PERSON_PATH, TWENTY_BASE_URL), {
       method: 'POST',
       headers: twentyHeaders(),
       body: JSON.stringify(payload)
     });
+    const responseText = await r.text();
+    console.log(`\n🔍 Response status:`, r.status);
+    console.log(`\n🔍 Response body:`, responseText);
+    
     if (!r.ok) {
-      const errorText = await r.text();
-      throw new Error(`Twenty create failed: ${r.status} ${errorText}`);
+      console.log(`\n❌ Failed to create person: ${r.status} - ${responseText}`);
+      throw new Error(`Twenty create failed: ${r.status} ${responseText}`);
     }
-    const response = await r.json();
-    validateApiResponse(response, ['id']);
-    return response;
+    
+    const response = JSON.parse(responseText);
+    console.log(`\n✅ Person created! Response:`, JSON.stringify(response, null, 2));
+    
+    // Extract ID from nested structure
+    const extractedId = response?.data?.createPerson?.id || response?.id;
+    console.log(`\n🔍 Extracted ID:`, extractedId);
+    
+    if (!extractedId) {
+      console.log(`\n⚠️ WARNING: No ID found in response`);
+    }
+    
+    return { id: extractedId, response };
   });
 }
 
@@ -358,6 +373,39 @@ async function twentyUpdatePerson(id, payload) {
   });
 }
 
+async function twentyCreateCompany(payload) {
+  return await withRetry(async () => {
+    const r = await fetch(new URL(TWENTY_CREATE_COMPANY_PATH, TWENTY_BASE_URL), {
+      method: 'POST',
+      headers: twentyHeaders(),
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) {
+      const errorText = await r.text();
+      throw new Error(`Twenty create company failed: ${r.status} ${errorText}`);
+    }
+    const response = await r.json();
+    validateApiResponse(response, ['id']);
+    return response;
+  });
+}
+
+async function twentyUpdateCompany(id, payload) {
+  return await withRetry(async () => {
+    const path = `${TWENTY_UPDATE_COMPANY_PATH}/${encodeURIComponent(id)}`;
+    const r = await fetch(new URL(path, TWENTY_BASE_URL), {
+      method: 'PATCH',
+      headers: twentyHeaders(),
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) {
+      const errorText = await r.text();
+      throw new Error(`Twenty update company failed: ${r.status} ${errorText}`);
+    }
+    return r.json();
+  });
+}
+
 async function twentyUpsertPerson(data) {
   const isCompany = global.destinationType === 'company';
   const existing = await twentySearchByEmail(data.email).catch(() => null);
@@ -367,28 +415,70 @@ async function twentyUpsertPerson(data) {
   const sourceTag = `From: ${listNames.join(', ')}`;
   
   const toPayload = (current = null) => {
-    // Try absolute minimal payload first - just names
+    // Minimal payload - send fields that Twenty CRM expects
     const payload = {};
     
-    // Name fields (most basic fields that should exist)
-    if (data.firstName) payload.firstName = data.firstName;
-    if (data.lastName) payload.lastName = data.lastName;
-    
-    // Combine into full name as fallback
-    const fullName = [data.firstName, data.lastName].filter(Boolean).join(' ');
-    if (fullName) {
-      payload.name = fullName;
+    if (isCompany) {
+      // For companies, use name field as a string (company name)
+      const companyName = data.company || data.email || 'Company';
+      payload.name = companyName;
+      
+      // That's it - keep company payload minimal to avoid metadata errors
+    } else {
+      // For people, use name as an object with firstName and lastName
+      payload.name = {
+        firstName: data.firstName || '',
+        lastName: data.lastName || ''
+      };
+      
+      // If no first/last name, use email as a fallback
+      if (!data.firstName && !data.lastName) {
+        // Use the name part of the email as firstName
+        const emailName = data.email.split('@')[0] || 'Contact';
+        payload.name = {
+          firstName: emailName,
+          lastName: ''
+        };
+      }
+      
+      // Twenty CRM expects emails as an array of objects
+      payload.emails = {
+        primaryEmail: data.email || '',
+        additionalEmails: null
+      };
+      
+      // Link to company if in comprehensive mode
+      if (global.companyId) {
+        payload.companyId = global.companyId;
+      }
+      
+      // Log the payload being sent
+      log(`DEBUG: Creating person with data: ${JSON.stringify(payload)}`, 'INFO');
+      
+      // Add phone if available
+      if (data.phone) {
+        payload.phones = {
+          primaryPhoneNumber: data.phone,
+          primaryPhoneCallingCode: '',
+          primaryPhoneCountryCode: '',
+          additionalPhones: null
+        };
+      }
+      
+      // Add city/location if available
+      if (data.location) {
+        payload.city = data.location;
+      }
+      
+      // Add LinkedIn if available
+      if (data.linkedin) {
+        payload.linkedinLink = {
+          primaryLinkLabel: 'LinkedIn',
+          primaryLinkUrl: data.linkedin,
+          secondaryLinks: null
+        };
+      }
     }
-    
-    // Add source information for traceability
-    if (sourceTag && !isCompany) {
-      // Try to add comment or description with list info
-      payload.comment = sourceTag;
-      payload.source = 'sendgrid';
-    }
-    
-    // Try to add other fields if they exist and don't cause metadata errors
-    // We'll let Twenty CRM reject individual fields rather than failing the whole record
     
     return payload;
   };
@@ -398,24 +488,31 @@ async function twentyUpsertPerson(data) {
   }
   
   if (isCompany) {
-    // For companies, still use people endpoint for now
+    // For companies, use the companies endpoint
     if (!existing) {
       const payload = toPayload();
       log(`Creating company record for: ${data.email}`);
-      const res = await twentyCreatePerson(payload);
+      const res = await twentyCreateCompany(payload);
       return { action: 'create', id: res?.id || null };
     } else {
-      const res = await twentyUpdatePerson(existing.id, toPayload(existing));
+      const res = await twentyUpdateCompany(existing.id, toPayload(existing));
       return { action: 'update', id: existing.id || res?.id || null };
     }
   } else {
     // For people
     if (!existing) {
       const payload = toPayload();
+      log(`Creating person with payload: ${JSON.stringify(payload)}`, 'INFO');
       const res = await twentyCreatePerson(payload);
-      return { action: 'create', id: res?.id || null };
+      log(`Person creation response: ${JSON.stringify(res)}`, 'INFO');
+      
+      // Extract ID from the response structure
+      const extractedId = res?.id || res?.response?.data?.createPerson?.id || res?.response?.id;
+      
+      return { action: 'create', id: extractedId || null };
     } else {
-      const res = await twentyUpdatePerson(existing.id, toPayload(existing));
+      const payload = toPayload(existing);
+      const res = await twentyUpdatePerson(existing.id, payload);
       return { action: 'update', id: existing.id || res?.id || null };
     }
   }
@@ -467,13 +564,20 @@ async function main() {
     let list_ids = selectedConfig.listIds.length > 0 ? selectedConfig.listIds : (SENDGRID_LIST_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
     let list_names = selectedConfig.listNames.length > 0 ? selectedConfig.listNames : (process.env.SENDGRID_LIST_NAMES || '').split(',').filter(Boolean);
     const segment_ids = (SENDGRID_SEGMENT_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-    const destinationType = selectedConfig.destinationType || process.env.DESTINATION_TYPE || 'people';
+    
+    // NEW MODE: When destination is 'company', we will:
+    // 1. Create ONE company from the list name
+    // 2. Create all contacts as PEOPLE linked to that company
+    const useComprehensiveMode = selectedConfig.destinationType === 'company';
+    const destinationType = useComprehensiveMode ? 'people' : (selectedConfig.destinationType || process.env.DESTINATION_TYPE || 'people');
+    
     log(`Export scope → lists: [${list_ids.join(', ')}], segments: [${segment_ids.join(', ')}]`);
-    log(`Migration destination: ${destinationType}`);
+    log(`Migration mode: ${useComprehensiveMode ? 'COMPREHENSIVE (Company + People)' : destinationType}`);
     
     // Store destination type and list information globally
     global.destinationType = destinationType;
     global.listNames = list_names.length > 0 ? list_names : ['Unknown List'];
+    global.useComprehensiveMode = useComprehensiveMode;
 
     const jobId = await sgCreateExportJob({ list_ids, segment_ids });
     log(`SendGrid export job id: ${jobId}`);
@@ -503,6 +607,28 @@ async function main() {
     
     log(`Will migrate to: ${destinationType}`);
 
+    // STEP 1: If comprehensive mode, create the company first
+    let companyId = null;
+    if (global.useComprehensiveMode && list_names.length > 0) {
+      const companyName = list_names[0]; // Use first list name as company name
+      log(`Creating company: ${companyName}`);
+      
+      try {
+        const companyPayload = { name: companyName };
+        const companyResponse = await twentyCreateCompany(companyPayload);
+        companyId = companyResponse?.id || companyResponse?.data?.createCompany?.id;
+        if (companyId) {
+          log(`✓ Company created with ID: ${companyId}`);
+          global.companyId = companyId;
+        } else {
+          log(`⚠ Company created but no ID returned`, 'WARN');
+        }
+      } catch (error) {
+        log(`Failed to create company: ${error.message}`, 'ERROR');
+        // Continue with people migration even if company creation fails
+      }
+    }
+
     const limit = pLimit(concurrency);
     let processed = 0, created = 0, updated = 0, failed = 0;
     const failedRows = [];
@@ -517,6 +643,7 @@ async function main() {
           // Log first 10 creations for verification
           if (created <= 10) {
             log(`✓ ${destinationType === 'company' ? 'Company' : 'Person'} created: ${row.email}`);
+            log(`✓ Person ID: ${res.id || 'no ID returned'}`, 'INFO');
           }
         }
         if (res.action === 'update') {
